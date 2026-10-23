@@ -36,6 +36,7 @@ export interface OverviewStats {
   blocked: number;
   require_approval: number;
   pending_approvals: number;
+  backboard_memories?: number;
 }
 
 export interface PolicyInfo {
@@ -100,6 +101,7 @@ export async function fetchOverview(): Promise<OverviewStats> {
     blocked: Number(source.blocked || 0),
     require_approval: Number(source.require_approval || 0),
     pending_approvals: Number(source.pending_approvals || 0),
+    backboard_memories: Number(source.backboard_memories || 0),
   };
 }
 

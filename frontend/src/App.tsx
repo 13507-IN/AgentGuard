@@ -50,6 +50,7 @@ export const App: React.FC = () => {
     blocked: 0,
     require_approval: 0,
     pending_approvals: 0,
+    backboard_memories: 0,
   });
   const [isLive, setIsLive] = useState<boolean>(true);
 
@@ -76,10 +77,14 @@ export const App: React.FC = () => {
         fetchBackboardMemories(query),
         fetchBackboardStats(),
       ]);
-      setMemories(mems);
-      setBackboardStats(s);
-    } catch {
-      // ignore
+      if (Array.isArray(mems)) {
+        setMemories(mems);
+      }
+      if (s) {
+        setBackboardStats(s);
+      }
+    } catch (err) {
+      console.error('Failed fetching Backboard memories:', err);
     } finally {
       setIsSearchingMemory(false);
     }
@@ -90,9 +95,12 @@ export const App: React.FC = () => {
     loadMemories();
     const interval = setInterval(() => {
       loadOverview();
-    }, 5000);
+      loadMemories();
+    }, 4000);
     return () => clearInterval(interval);
   }, []);
+
+  const memoryCount = backboardStats?.total_memories ?? (stats.backboard_memories || memories.length || 0);
 
   const handleMemorySearchSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -253,7 +261,7 @@ export const App: React.FC = () => {
                     <span className="text-zinc-300 text-[11px]">Backboard.io</span>
                   </div>
                   <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-950/80 border border-emerald-500/40 text-emerald-300 font-bold">
-                    {memories.length} mem
+                    {memoryCount} mem
                   </span>
                 </div>
 
@@ -453,7 +461,10 @@ export const App: React.FC = () => {
               </div>
               <p className="text-3xl font-bold font-mono text-white mb-2">{stats.pending_approvals}</p>
               <div className="flex items-center gap-1.5 text-[11px] font-mono text-amber-400">
-                <span>{stats.pending_approvals > 0 ? 'Pending operator sign-off' : 'Queue clear'}</span>
+                <span>{stats.pending_approvals > 0 ? `${stats.pending_approvals} pending operator sign-off` : 'Active queue clear'}</span>
+                {stats.require_approval > 0 && (
+                  <span className="text-zinc-500 text-[10px]">({stats.require_approval} in audit log)</span>
+                )}
               </div>
             </div>
 
@@ -461,6 +472,7 @@ export const App: React.FC = () => {
             <div
               onClick={() => loadMemories()}
               className="rounded-2xl border border-zinc-800/80 bg-[#11131a] p-5 shadow-sm cursor-pointer transition-all duration-300 hover:scale-[1.02] hover:border-emerald-500/40"
+              title="Click to refresh memories from Backboard cloud"
             >
               <div className="flex items-start justify-between mb-3">
                 <h3 className="text-xs font-mono font-medium text-zinc-400 uppercase tracking-wider">
@@ -470,10 +482,14 @@ export const App: React.FC = () => {
                   <ArrowUpRight className="w-3.5 h-3.5" />
                 </div>
               </div>
-              <p className="text-3xl font-bold font-mono text-white mb-2">{memories.length}</p>
+              <p className="text-3xl font-bold font-mono text-white mb-2">{memoryCount}</p>
               <div className="flex items-center gap-1.5 text-[11px] font-mono text-emerald-400">
                 <Sparkles className="w-3.5 h-3.5" />
-                <span>Semantic cross-session memory</span>
+                <span>
+                  {memoryCount > 0
+                    ? `${memoryCount} learned security rules`
+                    : 'Semantic cross-session memory'}
+                </span>
               </div>
             </div>
           </div>

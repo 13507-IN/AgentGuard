@@ -193,6 +193,13 @@ async def get_overview() -> dict[str, Any]:
     blocked = stats.get("blocked") or 0
     require_approval = stats.get("require_approval") or 0
     pending_count = len(pending) if isinstance(pending, list) else 0
+    memories_count = 0
+    if hasattr(app.state, "memory_manager") and app.state.memory_manager:
+        try:
+            m_stats = await app.state.memory_manager.get_stats()
+            memories_count = m_stats.get("total_memories", 0)
+        except Exception:
+            pass
 
     return {
         "total": total,
@@ -201,6 +208,7 @@ async def get_overview() -> dict[str, Any]:
         "blocked": blocked,
         "require_approval": require_approval,
         "pending_approvals": pending_count,
+        "backboard_memories": memories_count,
     }
 
 
