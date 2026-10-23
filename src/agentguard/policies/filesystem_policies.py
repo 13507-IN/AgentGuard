@@ -232,6 +232,17 @@ class SecretFilePolicy(Policy):
         "*.pfx",
         "*.p12",
         "*password*",
+        "*bank*",
+        "*banking*",
+        "*statement*",
+        "*tax*",
+        "*payroll*",
+        "*salary*",
+        "*ssn*",
+        "*wallet*",
+        "*seed*",
+        "*crypto*",
+        "*invoice*",
     ]
 
     PATH_PATTERNS = [
