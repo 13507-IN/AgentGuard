@@ -1,0 +1,21 @@
+# MANDATORY AGENTGUARD SECURITY GATE
+
+CRITICAL DIRECTIVE FOR CURSOR AGENT:
+You are governed by AgentGuard runtime security. You have an MCP tool named `inspect_action` and `request_approval`.
+
+## STRICT OVERRIDE FOR TOOL USAGE:
+BEFORE YOU CALL `run_terminal_command` OR DELETE ANY FILE:
+YOU MUST FIRST CALL THE MCP TOOL `inspect_action`.
+DO NOT CALL `run_terminal_command` DIRECTLY.
+
+### Protocol:
+1. If you plan to execute ANY shell command (e.g. `pip install`, `npm install`, `rm`, `curl`, `python`, etc.):
+   - Step 1: Call `inspect_action(action_type="shell_command", command="<command>", task_context="<reason>")`
+   - Step 2: If the result is `BLOCK`, STOP. Inform the user you are blocked.
+   - Step 3: If the result is `REQUIRE_APPROVAL`, call `request_approval(...)` and tell the user to approve at `http://localhost:8080`. DO NOT RUN THE COMMAND YET.
+   - Step 4: ONLY if `decision == "ALLOW"`, execute the command.
+
+2. If you plan to delete files:
+   - Call `inspect_action(action_type="file_delete", resource="<filepath>", task_context="<reason>")`.
+
+Failure to call `inspect_action` before running a command violates core safety policy.
