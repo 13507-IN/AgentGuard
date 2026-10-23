@@ -49,8 +49,15 @@ AgentGuard is an open-source security layer for tool-using AI agents. Connected 
                                                         ▼
                                        ┌────────────────────────────────┐
                                        │       Audit Log & Storage      │
-                                       │  • SQLite + WAL mode           │
+                                       │  • MongoDB (Atlas / local)     │
                                        │  • Full tamper-evident history │
+                                       └────────────────┬───────────────┘
+                                                        │
+                                                        ▼
+                                       ┌────────────────────────────────┐
+                                       │   Backboard Persistent Memory  │
+                                       │  • Cross-session recall        │
+                                       │  • Blocked / approved history  │
                                        └────────────────────────────────┘
 ```
 
@@ -80,16 +87,72 @@ AgentGuard classifies every proposed operation into one of three distinct outcom
 
 ---
 
+## Backboard Persistent Memory & Autonomous Agent
+
+AgentGuard uses [Backboard.io](https://backboard.io) as its long-term memory layer for autonomous agent runs. Backboard is **optional** — if no API key is configured, every deterministic security feature still works and the agent simply runs without recall.
+
+### What is stored
+
+- Every `ALLOW`, `BLOCK`, and `REQUIRE_APPROVAL` decision, with the action summary, matched policies, reason, and action hash.
+- Human approval outcomes (approved or rejected).
+- Memories recalled at the start of a run are injected into the planner context, so the agent remembers prior blocks and approvals across sessions.
+
+### Setup
+
+1. Create an API key at [backboard.io](https://backboard.io).
+2. Add it to `.env`:
+   ```bash
+   BACKBOARD_API_KEY=your_backboard_api_key
+   ```
+3. `backboard-sdk` is already declared in `pyproject.toml`, so `pip install -e .` installs it.
+
+On first use, AgentGuard finds or creates a Backboard assistant named `AgentGuard-Governor` (`src/agentguard/backboard_memory.py:22`).
+
+### Runtime flow
+
+`AgentRunner` (`src/agentguard/agent_runner.py`) performs the following for each autonomous task:
+
+1. Recall the last 10 memories from Backboard.
+2. Plan candidate commands (rule-based extraction, or a local Ollama model in the multi-turn loop).
+3. Pass **every** action through the deterministic policy engine.
+4. Persist the resulting decision to Backboard via `record_security_decision`.
+
+Memory writes are best-effort: Backboard failures are logged and can never change a security decision.
+
+### API endpoints
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| `POST` | `/api/agent/run` | Run an autonomous task under AgentGuard governance, with Backboard recall |
+| `GET` | `/api/agent/memories` | List memories stored for the `AgentGuard-Governor` assistant |
+| `POST` | `/api/simulate` | Run a predefined red-team scenario through the same governed loop |
+
+Example:
+
+```bash
+curl -X POST http://localhost:8080/api/agent/run \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "clean up old log files"}'
+```
+
+The response includes `backboard_memory_enabled`, `recalled_memories_count`, `recalled_memories`, and the decision for every planned step.
+
+> If `BACKBOARD_API_KEY` is unset or Backboard is unreachable, responses report `backboard_memory_enabled: false` and the run continues with policy enforcement only.
+
+---
+
 ## Installation & Setup
 
 ### Prerequisites
 - Python 3.11+
 - Node.js 18+ (for dashboard frontend)
+- MongoDB 6+ (local or [MongoDB Atlas](https://www.mongodb.com/atlas))
 - (Optional) [Ollama](https://ollama.ai) with `qwen2.5:3b` for local AI risk explanations
+- (Optional) [Backboard.io](https://backboard.io) API key for persistent agent memory
 
 ### 1. Clone & Set Up Python Environment
 ```bash
-git clone https://github.com/your-username/AgentGuard.git
+git clone https://github.com/13507-IN/AgentGuard.git
 cd AgentGuard
 
 # Create and activate virtual environment
@@ -111,10 +174,12 @@ cp .env.example .env
 ```
 Default configuration:
 - `AGENTGUARD_WORKSPACE=./workspace`: Path where filesystem actions are strictly confined.
-- `AGENTGUARD_DB_PATH=./agentguard.db`: SQLite database location.
+- `MONGODB_URI=mongodb://127.0.0.1:27017`: MongoDB connection string (Atlas or local).
+- `MONGODB_DATABASE=agentguard`: MongoDB database used for the audit log and approvals.
 - `AGENTGUARD_APPROVAL_TIMEOUT=300`: Approval expiration in seconds (5 minutes).
 - `OLLAMA_BASE_URL=http://localhost:11434`: Local Ollama server.
 - `OLLAMA_MODEL=qwen2.5:3b`: Open-weight model for risk explanations.
+- `BACKBOARD_API_KEY=...`: Backboard.io API key for persistent agent memory (optional).
 
 ### 3. Build Dashboard Frontend
 ```bash
@@ -212,10 +277,12 @@ AgentGuard includes a comprehensive test suite validating policy evaluations, ta
 
 ## Model & License Details
 
-- **AI Model**: [Qwen2.5-3B-Instruct](https://huggingface.co/Qwen/Qwen2.5-3B-Instruct)
+- **Default AI Model**: [Qwen2.5-3B-Instruct](https://huggingface.co/Qwen/Qwen2.5-3B-Instruct)
   - **License**: Apache 2.0 (permissive open-source commercial and research use).
   - **Role**: AI Risk Explainer (summarizes policy triggers and provides safer alternatives).
   - **Graceful Fallback**: The deterministic policy engine functions identically even if the model or Ollama is offline.
+- **Alternative model**: [Gemma 4](https://ollama.com/library/gemma4) (Apache 2.0). Set `OLLAMA_MODEL=gemma4:e2b` (or `e4b`) to use it; the integration is unchanged.
+- **Memory layer**: [Backboard.io](https://backboard.io) via `backboard-sdk`. Used only for recall/audit context, never to authorize actions.
 - **Software License**: MIT License. See [LICENSE](LICENSE) for details.
 
 ---
@@ -225,3 +292,4 @@ AgentGuard includes a comprehensive test suite validating policy evaluations, ta
 1. **Non-Intrusive Interception**: AgentGuard does not hook OS system calls globally. The client environment must invoke AgentGuard tools.
 2. **Command Parsing Bounds**: Complex nested bash expressions and multi-stage pipelines default to `REQUIRE_APPROVAL` (fail-closed).
 3. **Platform Scope**: Process isolation uses sub-process sanitization with cleaned environment variables. For multi-tenant hosting, deployment inside containerized sandboxes (Docker / gVisor) is recommended.
+4. **Backboard Is Not a Security Control**: Backboard memory is advisory context only. A recalled memory can never change a policy decision, bypass approval, or unblock a prohibited action.
