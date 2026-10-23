@@ -191,6 +191,35 @@ export async function rejectAction(approvalId: string, decidedBy: string): Promi
   return handleResponse<any>(res);
 }
 
+export interface ApprovalExecutionResult {
+  status: string;
+  approval_id: string;
+  success: boolean;
+  stdout: string;
+  stderr: string;
+  exit_code: number | null;
+  duration_ms: number;
+  command: string;
+}
+
+/**
+ * Approve and execute an authorized action immediately in workspace
+ */
+export async function executeApproval(
+  approvalId: string,
+  decidedBy: string = 'lead_security_officer'
+): Promise<ApprovalExecutionResult> {
+  const res = await fetch(`${API_BASE}/approvals/${encodeURIComponent(approvalId)}/execute`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+    },
+    body: JSON.stringify({ decided_by: decidedBy }),
+  });
+  return handleResponse<ApprovalExecutionResult>(res);
+}
+
 /**
  * Inspect a proposed action against security policies and AI analysis
  */
@@ -292,11 +321,37 @@ export async function runAutonomousAgent(prompt: string): Promise<AgentRunRespon
   return handleResponse<AgentRunResponse>(res);
 }
 
-export async function fetchBackboardMemories(): Promise<BackboardMemoryItem[]> {
-  const res = await fetch(`${API_BASE}/agent/memories`, {
+export async function fetchBackboardMemories(query?: string): Promise<BackboardMemoryItem[]> {
+  const url = query && query.trim()
+    ? `${API_BASE}/agent/memories?query=${encodeURIComponent(query.trim())}`
+    : `${API_BASE}/agent/memories`;
+  const res = await fetch(url, {
     headers: { 'Accept': 'application/json' },
   });
   return handleResponse<BackboardMemoryItem[]>(res);
+}
+
+export interface BackboardStats {
+  enabled: boolean;
+  assistant_id?: string;
+  total_memories: number;
+  max_memories?: number;
+  remaining_slots?: number;
+}
+
+export async function fetchBackboardStats(): Promise<BackboardStats> {
+  const res = await fetch(`${API_BASE}/agent/memories/stats`, {
+    headers: { 'Accept': 'application/json' },
+  });
+  return handleResponse<BackboardStats>(res);
+}
+
+export async function deleteBackboardMemory(memoryId: string): Promise<any> {
+  const res = await fetch(`${API_BASE}/agent/memories/${encodeURIComponent(memoryId)}`, {
+    method: 'DELETE',
+    headers: { 'Accept': 'application/json' },
+  });
+  return handleResponse<any>(res);
 }
 
 export async function simulateThreat(scenario: string, command?: string): Promise<AgentRunResponse> {

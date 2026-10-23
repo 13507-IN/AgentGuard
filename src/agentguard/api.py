@@ -34,6 +34,8 @@ from agentguard.policy_engine import PolicyEngine
 from agentguard.risk_explainer import RiskExplainer
 from agentguard.schemas import (
     ActionRequest,
+    ActionType,
+    ApprovalStatus,
     Decision,
     RiskCategory,
     RiskExplanation,
@@ -392,6 +394,95 @@ async def reject_request(
     }
 
 
+@app.post("/api/approvals/{approval_id}/execute")
+async def execute_approved_request(
+    approval_id: str,
+    body: ApprovalDecisionRequest = ApprovalDecisionRequest(),
+) -> dict[str, Any]:
+    """Approve (if pending) and execute an authorized action immediately in the controlled workspace."""
+    await _ensure_state()
+
+    raw = await app.state.db.get_approval(approval_id)
+    if not raw:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Approval request '{approval_id}' not found",
+        )
+
+    curr_status = raw.get("status")
+    if curr_status in (ApprovalStatus.PENDING.value, "pending"):
+        try:
+            res = app.state.approval_manager.approve(approval_id, decided_by=body.decided_by)
+            if asyncio.iscoroutine(res):
+                await res
+            raw = await app.state.db.get_approval(approval_id)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Approval validation failed: {exc}",
+            )
+
+    curr_status = raw.get("status") if raw else ""
+    if curr_status not in (ApprovalStatus.APPROVED.value, "approved"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Approval request '{approval_id}' is not in approved state (current: {curr_status})",
+        )
+
+    details = raw.get("action_details") or {}
+    try:
+        action = ActionRequest(**details)
+    except Exception:
+        action = ActionRequest(
+            action_type=details.get("action_type", ActionType.SHELL_COMMAND),
+            command=details.get("command"),
+            resource=details.get("resource"),
+            task_context=f"Approved execution of #{approval_id}",
+        )
+
+    decision = SecurityDecision(
+        decision=Decision.REQUIRE_APPROVAL,
+        risk_category=raw.get("risk_category", RiskCategory.MEDIUM),
+        action_hash=raw.get("action_hash", action.compute_hash()),
+        explanation=f"Explicitly authorized and executed by human operator '{body.decided_by}'",
+        requires_approval=True,
+    )
+
+    try:
+        exec_res = await app.state.executor.execute(action, decision, approval_id=approval_id)
+    except Exception as exc:
+        logger.exception("ControlledExecutor error during approved execution")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Execution error: {exc}",
+        )
+
+    try:
+        await app.state.audit_logger.log_execution(
+            action=action,
+            decision=decision,
+            execution_status="success" if exec_res.success else "failed",
+            execution_output=exec_res.output or exec_res.error,
+            duration_ms=exec_res.duration_ms,
+        )
+    except Exception as log_err:
+        logger.warning("Failed to log approved execution to audit: %s", log_err)
+
+    if hasattr(app.state, "agent_runner") and app.state.agent_runner:
+        app.state.agent_runner._record_memory_bg(action, decision)
+
+    return {
+        "status": "executed",
+        "approval_id": approval_id,
+        "success": exec_res.success,
+        "stdout": exec_res.output or "",
+        "stderr": exec_res.error or "",
+        "exit_code": exec_res.exit_code,
+        "duration_ms": exec_res.duration_ms,
+        "command": action.command or action.summary(),
+    }
+
+
 @app.post("/api/inspect")
 async def inspect_action_endpoint(action: ActionRequest) -> dict[str, Any]:
     """Manually inspect a proposed action and return the security decision with risk evaluation."""
@@ -555,14 +646,45 @@ async def run_ollama_loop(req: OllamaLoopRequest) -> dict[str, Any]:
 
 
 @app.get("/api/agent/memories")
-async def get_agent_memories() -> list[dict[str, Any]]:
-    """Retrieve long-term memories preserved in Backboard.io."""
+async def get_agent_memories(
+    query: str | None = Query(None, description="Optional semantic search query"),
+    limit: int = Query(50, ge=1, le=100),
+) -> list[dict[str, Any]]:
+    """Retrieve long-term memories preserved in Backboard.io with optional semantic search."""
     await _ensure_state()
     try:
-        return await app.state.memory_manager.get_memories()
+        if query and query.strip():
+            return await app.state.memory_manager.search_memories(query=query, limit=limit)
+        return await app.state.memory_manager.get_memories(limit=limit)
     except Exception as exc:
         logger.warning("Error fetching Backboard memories: %s", exc)
         return []
+
+
+@app.get("/api/agent/memories/stats")
+async def get_agent_memory_stats() -> dict[str, Any]:
+    """Retrieve Backboard persistent memory cloud statistics."""
+    await _ensure_state()
+    try:
+        return await app.state.memory_manager.get_stats()
+    except Exception as exc:
+        logger.warning("Error fetching Backboard stats: %s", exc)
+        return {"enabled": False, "total_memories": 0}
+
+
+@app.delete("/api/agent/memories/{memory_id}")
+async def delete_agent_memory(memory_id: str) -> dict[str, Any]:
+    """Delete a specific security memory from Backboard cloud."""
+    await _ensure_state()
+    try:
+        success = await app.state.memory_manager.delete_memory(memory_id)
+        if not success:
+            raise HTTPException(status_code=404, detail="Memory not found or could not be deleted")
+        return {"status": "deleted", "memory_id": memory_id}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 @app.post("/api/simulate")

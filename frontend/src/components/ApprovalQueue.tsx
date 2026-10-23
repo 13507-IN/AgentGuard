@@ -8,8 +8,18 @@ import {
   RefreshCw,
   ChevronDown,
   ChevronUp,
+  Play,
+  Loader2,
+  Terminal,
 } from 'lucide-react';
-import { fetchApprovals, approveAction, rejectAction, ApprovalRequest } from '../api/client';
+import {
+  fetchApprovals,
+  approveAction,
+  rejectAction,
+  executeApproval,
+  ApprovalRequest,
+  ApprovalExecutionResult,
+} from '../api/client';
 
 export const ApprovalQueue: React.FC = () => {
   const [approvals, setApprovals] = useState<ApprovalRequest[]>([]);
@@ -18,6 +28,8 @@ export const ApprovalQueue: React.FC = () => {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [executingId, setExecutingId] = useState<string | null>(null);
+  const [executionResults, setExecutionResults] = useState<Record<string, ApprovalExecutionResult>>({});
 
   const loadApprovals = async () => {
     try {
@@ -35,6 +47,22 @@ export const ApprovalQueue: React.FC = () => {
     const interval = setInterval(loadApprovals, 4000);
     return () => clearInterval(interval);
   }, []);
+
+  const handleAuthorizeAndRun = async (id: string) => {
+    setErrorMsg(null);
+    setSuccessMsg(null);
+    setExecutingId(id);
+    try {
+      const res = await executeApproval(id, operatorId);
+      setExecutionResults((prev) => ({ ...prev, [id]: res }));
+      setSuccessMsg(`Action authorized and executed (${res.duration_ms}ms) with exit code ${res.exit_code}`);
+      loadApprovals();
+    } catch (err: any) {
+      setErrorMsg(err.message || 'Execution failed');
+    } finally {
+      setExecutingId(null);
+    }
+  };
 
   const handleApprove = async (id: string) => {
     setErrorMsg(null);
@@ -158,15 +186,34 @@ export const ApprovalQueue: React.FC = () => {
 
                     <div className="flex items-center gap-2 shrink-0">
                       <button
-                        onClick={() => handleApprove(req.approval_id)}
-                        className="px-3.5 py-1.5 rounded bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs uppercase tracking-wider flex items-center gap-1.5 transition glow-emerald"
+                        disabled={executingId === req.approval_id}
+                        onClick={() => handleAuthorizeAndRun(req.approval_id)}
+                        className="px-3 py-1.5 rounded bg-emerald-500 hover:bg-emerald-400 text-black font-bold text-xs uppercase tracking-wider flex items-center gap-1.5 transition glow-emerald disabled:opacity-50"
+                        title="Authorize and immediately execute in controlled workspace"
                       >
-                        <CheckCircle2 className="w-3.5 h-3.5" />
-                        <span>Authorize</span>
+                        {executingId === req.approval_id ? (
+                          <>
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            <span>Running...</span>
+                          </>
+                        ) : (
+                          <>
+                            <Play className="w-3.5 h-3.5 fill-black" />
+                            <span>Authorize & Run</span>
+                          </>
+                        )}
+                      </button>
+                      <button
+                        onClick={() => handleApprove(req.approval_id)}
+                        className="px-2.5 py-1.5 rounded bg-zinc-900 border border-zinc-700 hover:border-emerald-500 text-zinc-300 hover:text-white font-mono text-xs uppercase tracking-wider flex items-center gap-1.5 transition"
+                        title="Authorize only (no execution)"
+                      >
+                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                        <span>Sign-off</span>
                       </button>
                       <button
                         onClick={() => handleReject(req.approval_id)}
-                        className="px-3.5 py-1.5 rounded bg-rose-600/80 hover:bg-rose-500 text-white font-bold text-xs uppercase tracking-wider flex items-center gap-1.5 transition glow-rose"
+                        className="px-2.5 py-1.5 rounded bg-rose-950/60 border border-rose-800/80 hover:bg-rose-900 text-rose-300 font-mono text-xs uppercase tracking-wider flex items-center gap-1.5 transition"
                       >
                         <XCircle className="w-3.5 h-3.5" />
                         <span>Deny</span>
@@ -188,6 +235,27 @@ export const ApprovalQueue: React.FC = () => {
                     </span>
                     <span>ID: {req.approval_id}</span>
                   </div>
+
+                  {/* Inline Execution Output Terminal */}
+                  {executionResults[req.approval_id] && (
+                    <div className="mt-2 bg-[#090a0f] border border-emerald-900/60 rounded p-3 font-mono text-xs">
+                      <div className="flex items-center justify-between pb-1.5 border-b border-zinc-800/80 mb-2">
+                        <span className="text-emerald-400 font-bold flex items-center gap-1.5">
+                          <Terminal className="w-3.5 h-3.5" />
+                          <span>Execution Result [EXIT {executionResults[req.approval_id].exit_code ?? 0}]</span>
+                        </span>
+                        <span className="text-[10px] text-zinc-500">
+                          Latency: {executionResults[req.approval_id].duration_ms}ms
+                        </span>
+                      </div>
+                      <div className="text-zinc-400 text-[11px] mb-1">
+                        $ {executionResults[req.approval_id].command}
+                      </div>
+                      <pre className="text-zinc-200 text-xs overflow-x-auto whitespace-pre-wrap bg-black/60 p-2 rounded">
+                        {executionResults[req.approval_id].stdout || executionResults[req.approval_id].stderr || '(Execution returned empty stdout)'}
+                      </pre>
+                    </div>
+                  )}
 
                   {/* Expanded JSON Inspector */}
                   {isExpanded && (

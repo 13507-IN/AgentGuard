@@ -123,6 +123,76 @@ class BackboardMemoryManager:
             logger.error("Failed to fetch Backboard memories: %s", exc)
             return []
 
+    async def search_memories(self, query: str, limit: int = 5) -> list[dict[str, Any]]:
+        """Search long-term memories in Backboard using semantic similarity."""
+        if not self.is_available() or not query.strip():
+            return await self.get_memories(limit=limit)
+
+        try:
+            assistant_id = await self.get_or_create_assistant()
+            assert self._client is not None
+            resp = await self._client.search_memories(assistant_id=assistant_id, query=query, limit=limit)
+            mems = resp.get("memories", []) if isinstance(resp, dict) else getattr(resp, "memories", [])
+            output = []
+            for m in mems:
+                if isinstance(m, dict):
+                    output.append({
+                        "id": m.get("id", str(uuid.uuid4())),
+                        "content": m.get("content", ""),
+                        "created_at": m.get("created_at"),
+                        "score": m.get("score"),
+                        "metadata": m.get("metadata", {}),
+                    })
+                else:
+                    output.append({
+                        "id": getattr(m, "id", str(uuid.uuid4())),
+                        "content": getattr(m, "content", ""),
+                        "created_at": getattr(m, "created_at", None),
+                        "score": getattr(m, "score", None),
+                        "metadata": getattr(m, "metadata", {}),
+                    })
+            return output
+        except Exception as exc:
+            logger.error("Failed to search Backboard memories: %s", exc)
+            return await self.get_memories(limit=limit)
+
+    async def get_stats(self) -> dict[str, Any]:
+        """Fetch memory storage statistics from Backboard."""
+        if not self.is_available():
+            return {"enabled": False, "total_memories": 0}
+
+        try:
+            assistant_id = await self.get_or_create_assistant()
+            assert self._client is not None
+            stats = await self._client.get_memory_stats(assistant_id=assistant_id)
+            total = getattr(stats, "total_memories", 0)
+            limits = getattr(stats, "limits", {})
+            return {
+                "enabled": True,
+                "assistant_id": assistant_id,
+                "total_memories": total,
+                "max_memories": limits.get("max_memories_per_assistant", 200000),
+                "remaining_slots": limits.get("remaining_slots", 199984),
+            }
+        except Exception as exc:
+            logger.warning("Failed fetching Backboard stats: %s", exc)
+            return {"enabled": True, "total_memories": 0, "error": str(exc)}
+
+    async def delete_memory(self, memory_id: str) -> bool:
+        """Delete an individual memory from Backboard cloud."""
+        if not self.is_available():
+            return False
+
+        try:
+            assistant_id = await self.get_or_create_assistant()
+            assert self._client is not None
+            await self._client.delete_memory(assistant_id=assistant_id, memory_id=memory_id)
+            logger.info("Deleted Backboard memory: %s", memory_id)
+            return True
+        except Exception as exc:
+            logger.error("Failed to delete Backboard memory %s: %s", memory_id, exc)
+            return False
+
     async def record_security_decision(
         self,
         action: ActionRequest,

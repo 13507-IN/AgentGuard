@@ -145,8 +145,8 @@ class AgentRunner:
         6. If REQUIRE_APPROVAL: queue in Human Review Queue, record to memory.
         7. If ALLOW: execute safely via ControlledExecutor, record output.
         """
-        # 1. Recall Backboard memories
-        memories = await self.memory_manager.get_memories(limit=10)
+        # 1. Recall Backboard memories relevant to the prompt via semantic vector search
+        memories = await self.memory_manager.search_memories(query=prompt, limit=6)
         recalled_notes = [m.get("content", "") for m in memories if m.get("content")]
 
         # 2. Extract planned actions
@@ -169,7 +169,7 @@ class AgentRunner:
             # 5. Handle Security Decision
             if decision.decision == Decision.BLOCK:
                 total_blocked += 1
-                await self.memory_manager.record_security_decision(act, decision)
+                self._record_memory_bg(act, decision)
 
                 step_results.append({
                     "step": idx,
@@ -185,7 +185,7 @@ class AgentRunner:
             elif decision.decision == Decision.REQUIRE_APPROVAL:
                 total_queued += 1
                 approval_rec = await self.approval_manager.create_request(act, decision)
-                await self.memory_manager.record_security_decision(act, decision)
+                self._record_memory_bg(act, decision)
 
                 step_results.append({
                     "step": idx,
@@ -210,7 +210,7 @@ class AgentRunner:
                     execution_output=exec_res.stdout or exec_res.stderr,
                     duration_ms=exec_res.duration_ms,
                 )
-                await self.memory_manager.record_security_decision(act, decision)
+                self._record_memory_bg(act, decision)
 
                 step_results.append({
                     "step": idx,
@@ -235,16 +235,40 @@ class AgentRunner:
             "steps": step_results,
         }
 
+    def _record_memory_bg(self, action: ActionRequest, decision: SecurityDecision) -> None:
+        """Persist security decision to Backboard cloud memory asynchronously in the background.
+
+        Ensures zero added latency to the execution loop while maintaining persistent memory.
+        """
+        if not self.memory_manager.is_available():
+            return
+
+        async def _persist() -> None:
+            try:
+                await self.memory_manager.record_security_decision(action, decision)
+            except Exception as e:
+                logger.debug("Background Backboard memory write error: %s", e)
+
+        try:
+            asyncio.create_task(_persist())
+        except Exception as exc:
+            logger.warning("Could not schedule Backboard memory task: %s", exc)
+
     async def _query_ollama(self, prompt: str, system_prompt: str, model: str = "qwen2.5:3b") -> str:
-        """Call local Ollama model to generate raw terminal plans."""
+        """Call local Ollama model to generate raw terminal plans with low latency."""
         url = f"{self.config.ollama_base_url.rstrip('/')}/api/generate"
         payload = {
             "model": model,
             "prompt": prompt,
             "system": system_prompt,
             "stream": False,
+            "options": {
+                "num_predict": 40,
+                "temperature": 0.0,
+                "stop": ["\n\n", "Note:", "Explanation:", "```", "#", "$"]
+            }
         }
-        async with httpx.AsyncClient(timeout=45.0) as client:
+        async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(url, json=payload)
             if resp.status_code == 200:
                 data = resp.json()
@@ -253,14 +277,18 @@ class AgentRunner:
 
     def _parse_commands_from_text(self, text: str) -> list[str]:
         """Clean raw LLM output into individual executable shell command strings."""
-        lines = [line.strip() for line in text.strip().splitlines() if line.strip()]
+        ansi_escape = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+        cleaned_text = ansi_escape.sub("", text)
+
+        lines = [line.strip() for line in cleaned_text.strip().splitlines() if line.strip()]
         cleaned = []
         for line in lines:
             l = re.sub(r"^```[a-z]*", "", line).strip()
             l = re.sub(r"```$", "", l).strip()
             l = re.sub(r"^\d+[\.\)]\s*", "", l).strip()
             l = re.sub(r"^\$\s*", "", l).strip()
-            if l and not l.startswith("#") and not l.startswith("//"):
+            l = "".join(c for c in l if c.isprintable()).strip()
+            if l and not l.startswith("#") and not l.startswith("//") and not l.lower().startswith("here are"):
                 cleaned.append(l)
         return cleaned
 
@@ -278,7 +306,8 @@ class AgentRunner:
         5. Self-Correction (Local Qwen) proposes workspace-scoped commands based on feedback.
         6. Re-evaluate with AgentGuard and resolve.
         """
-        memories = await self.memory_manager.get_memories(limit=10)
+        # 1. Recall Backboard persistent security memories matching the task semantically
+        memories = await self.memory_manager.search_memories(query=prompt, limit=6)
         recalled_notes = [m.get("content", "") for m in memories if m.get("content")]
         memory_context = "\n".join(f"- {note}" for note in recalled_notes[:4])
 
@@ -314,7 +343,7 @@ class AgentRunner:
             await self.audit_logger.log_inspection(act, decision)
 
             if decision.decision == Decision.BLOCK:
-                await self.memory_manager.record_security_decision(act, decision)
+                self._record_memory_bg(act, decision)
                 blocks_found.append({
                     "command": cmd,
                     "policies": decision.matched_policies,
@@ -333,7 +362,7 @@ class AgentRunner:
 
             elif decision.decision == Decision.REQUIRE_APPROVAL:
                 approval_rec = await self.approval_manager.create_request(act, decision)
-                await self.memory_manager.record_security_decision(act, decision)
+                self._record_memory_bg(act, decision)
                 turn1_steps.append({
                     "step": idx,
                     "command": cmd,
@@ -353,7 +382,7 @@ class AgentRunner:
                     execution_status="success" if exec_res.success else "failed",
                     execution_output=exec_res.stdout or exec_res.stderr,
                 )
-                await self.memory_manager.record_security_decision(act, decision)
+                self._record_memory_bg(act, decision)
                 turn1_steps.append({
                     "step": idx,
                     "command": cmd,
@@ -407,7 +436,7 @@ class AgentRunner:
                 await self.audit_logger.log_inspection(act, decision)
 
                 if decision.decision == Decision.BLOCK:
-                    await self.memory_manager.record_security_decision(act, decision)
+                    self._record_memory_bg(act, decision)
                     turn2_steps.append({
                         "step": idx,
                         "command": cmd,
@@ -419,7 +448,7 @@ class AgentRunner:
 
                 elif decision.decision == Decision.REQUIRE_APPROVAL:
                     approval_rec = await self.approval_manager.create_request(act, decision)
-                    await self.memory_manager.record_security_decision(act, decision)
+                    self._record_memory_bg(act, decision)
                     turn2_steps.append({
                         "step": idx,
                         "command": cmd,
@@ -439,7 +468,7 @@ class AgentRunner:
                         execution_status="success" if exec_res.success else "failed",
                         execution_output=exec_res.stdout or exec_res.stderr,
                     )
-                    await self.memory_manager.record_security_decision(act, decision)
+                    self._record_memory_bg(act, decision)
                     turn2_steps.append({
                         "step": idx,
                         "command": cmd,
