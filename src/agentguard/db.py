@@ -209,12 +209,15 @@ class Database:
             },
         )
 
-    async def get_pending_approvals(self) -> list[dict[str, Any]]:
-        """Get all pending approvals."""
+    async def get_approvals(self, status: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+        """Get approvals with optional status filter (e.g. pending, approved, rejected, expired, all)."""
         await self.ensure_connected()
-        cursor = self._approvals_col.find({"status": "pending"}, {"_id": 0}).sort(
+        query: dict[str, Any] = {}
+        if status and status.lower() != "all":
+            query["status"] = status.lower()
+        cursor = self._approvals_col.find(query, {"_id": 0}).sort(
             "requested_at", pymongo.DESCENDING
-        )
+        ).limit(limit)
         results = []
         async for doc in cursor:
             if isinstance(doc.get("action_details"), str):
@@ -224,6 +227,10 @@ class Database:
                     pass
             results.append(doc)
         return results
+
+    async def get_pending_approvals(self) -> list[dict[str, Any]]:
+        """Get all pending approvals."""
+        return await self.get_approvals(status="pending", limit=100)
 
     async def expire_stale_approvals(self) -> int:
         """Expire all pending approvals that have passed their timeout."""

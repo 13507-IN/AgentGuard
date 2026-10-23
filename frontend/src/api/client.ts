@@ -144,10 +144,11 @@ export async function fetchAuditLog(params?: {
 }
 
 /**
- * Fetch pending approvals
+ * Fetch approvals with optional status filter (all, pending, approved, rejected, expired)
  */
-export async function fetchApprovals(): Promise<ApprovalRequest[]> {
-  const res = await fetch(`${API_BASE}/approvals`, {
+export async function fetchApprovals(status: string = 'all'): Promise<ApprovalRequest[]> {
+  const url = status ? `${API_BASE}/approvals?status=${encodeURIComponent(status)}` : `${API_BASE}/approvals`;
+  const res = await fetch(url, {
     headers: { 'Accept': 'application/json' },
   });
   const data = await handleResponse<any>(res);

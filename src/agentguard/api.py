@@ -267,8 +267,11 @@ async def get_audit_entry(entry_id: str) -> dict[str, Any]:
 
 
 @app.get("/api/approvals")
-async def get_approvals() -> list[dict[str, Any]]:
-    """Retrieve all pending approval requests."""
+async def get_approvals(
+    status: str | None = Query("all", description="Filter by status: pending, approved, rejected, expired, all"),
+    limit: int = Query(50, ge=1, le=200, description="Max entries to return"),
+) -> list[dict[str, Any]]:
+    """Retrieve approval requests with optional status filtering."""
     await _ensure_state()
 
     # Expire stale first
@@ -279,14 +282,18 @@ async def get_approvals() -> list[dict[str, Any]]:
     except Exception as exc:
         logger.warning("Failed expiring stale approvals: %s", exc)
 
-    pending: list[Any] = []
-    if hasattr(app.state.approval_manager, "get_pending"):
-        p_res = app.state.approval_manager.get_pending()
-        pending = await p_res if asyncio.iscoroutine(p_res) else p_res
+    records: list[Any] = []
+    if hasattr(app.state.approval_manager, "get_approvals"):
+        p_res = app.state.approval_manager.get_approvals(status=status, limit=limit)
+        records = await p_res if asyncio.iscoroutine(p_res) else p_res
+    elif hasattr(app.state.db, "get_approvals"):
+        records = await app.state.db.get_approvals(status=status, limit=limit)
+    elif status == "pending" or not status:
+        records = await app.state.approval_manager.get_pending()
     else:
-        pending = await app.state.db.get_pending_approvals()
+        records = await app.state.db.get_pending_approvals()
 
-    return [_serialize_record(item) for item in pending or []]
+    return [_serialize_record(item) for item in records or []]
 
 
 @app.get("/api/approvals/{approval_id}")

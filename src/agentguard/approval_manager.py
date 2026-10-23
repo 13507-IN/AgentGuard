@@ -272,15 +272,27 @@ class ApprovalManager:
 
         return True
 
+    async def get_approvals(self, status: str | None = None, limit: int = 50) -> list[ApprovalRecord]:
+        """Get approval records with optional status filter after expiring stale ones.
+
+        Args:
+            status: Optional status string (e.g., 'pending', 'approved', 'rejected', 'expired', 'all').
+            limit: Maximum records to return.
+
+        Returns:
+            List of ApprovalRecord instances.
+        """
+        await self.expire_stale()
+        rows = await self.db.get_approvals(status=status, limit=limit)
+        return [self._to_record(row) for row in rows]
+
     async def get_pending(self) -> list[ApprovalRecord]:
         """Get all pending approval requests after expiring stale ones.
 
         Returns:
             List of pending ApprovalRecord instances.
         """
-        await self.expire_stale()
-        rows = await self.db.get_pending_approvals()
-        return [self._to_record(row) for row in rows]
+        return await self.get_approvals(status="pending", limit=100)
 
     async def get_record(self, approval_id: str) -> ApprovalRecord | None:
         """Get a specific approval record by its ID.
